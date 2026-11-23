@@ -1,0 +1,17 @@
+# Conecta Grafana al SQL Server del profe (contenedor mssql) al arrancar
+apiVersion: 1
+
+datasources:
+  - name: SQLServer-Invernadero
+    uid: mssql-invernadero
+    type: mssql
+    url: ${MSSQL_HOST}:${MSSQL_PORT}
+    user: ${MSSQL_USER}
+    isDefault: true
+    jsonData:
+      database: ${MSSQL_DATABASE}
+      encrypt: "false"
+      tlsSkipVerify: true
+      maxOpenConns: 10
+    secureJsonData:
+      password: ${MSSQL_PASSWORD}

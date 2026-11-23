@@ -1,0 +1,7 @@
+# Contraseñas reales: NO subir a GitHub (usa servidor/config.env.ejemplo como plantilla)
+servidor/config.env
+
+# Compilaciones locales
+build/
+__pycache__/
+*.pyc

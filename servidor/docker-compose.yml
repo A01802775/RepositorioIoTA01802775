@@ -1,0 +1,81 @@
+# =============================================================================
+#  Servidor del invernadero — corre en DOCKER DESKTOP (tu compu)
+#
+#  La base de datos es el SQL Server de la clase: el contenedor "mssql"
+#  (mssql/server:2022-latest, puerto 1433), que va APARTE de este archivo y
+#  vive en la red de Docker "tc1004b". El puente y Grafana se unen a esa red
+#  para hablarle directo por su nombre ("mssql").
+#  -> Préndelo primero en Docker Desktop (botón ▶).
+#
+#  Levantar:   docker compose --env-file config.env up -d --build
+#  Ver estado: docker compose --env-file config.env ps
+#  Ver logs:   docker compose --env-file config.env logs -f puente
+#
+#  restart: unless-stopped  -> cada contenedor arranca solo al abrir
+#  Docker Desktop y se reinicia si se cae (queda "retenido en ciclo").
+# =============================================================================
+
+services:
+
+  # --- Broker MQTT (aquí llegan los datos del UNO Q) ---------------------------
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+
+  # --- Puente MQTT -> SQL Server ------------------------------------------------
+  puente:
+    build: ./puente
+    container_name: puente
+    restart: unless-stopped
+    environment:
+      MQTT_BROKER: mosquitto
+      MQTT_PUERTO: "1883"
+      MSSQL_HOST: ${MSSQL_HOST}
+      MSSQL_PORT: ${MSSQL_PORT}
+      MSSQL_USER: ${MSSQL_USER}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+      MSSQL_DATABASE: ${MSSQL_DATABASE}
+    networks:
+      - default
+      - tc1004b
+    depends_on:
+      - mosquitto
+
+  # --- Dashboard ------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      MSSQL_HOST: ${MSSQL_HOST}
+      MSSQL_PORT: ${MSSQL_PORT}
+      MSSQL_USER: ${MSSQL_USER}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD}
+      MSSQL_DATABASE: ${MSSQL_DATABASE}
+    networks:
+      - default
+      - tc1004b
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - puente
+
+volumes:
+  mosquitto_data:
+  grafana_data:
+
+networks:
+  # Red de la clase donde vive el contenedor mssql (ya existe, no se crea aquí)
+  tc1004b:
+    external: true

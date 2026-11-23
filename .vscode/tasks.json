@@ -1,0 +1,263 @@
+{
+  // Tareas de VS Code para el repositorio RepositorioIoTA01802775 (Windows).
+  // Ctrl+Shift+P -> "Tasks: Run Task" -> elige una.
+  //  - La App (sketch + Python) va al UNO Q por SSH (192.168.7.1 = cable USB).
+  //  - El servidor (Mosquitto, puente, Grafana) corre en DOCKER DESKTOP.
+  //  - La base de datos es el contenedor "mssql" (SQL Server) del profe.
+  "version": "2.0.0",
+  "tasks": [
+    // ------------------------------------------------------------- WINDOWS (tu compu)
+    {
+      "label": "W2) Compilar sketch en Windows (revisar errores)",
+      "type": "process",
+      "command": "C:\\Tools\\TC1004B\\arduino-cli.exe",
+      "args": [
+        "--config-file", "C:\\Tools\\TC1004B\\arduino-cli.yaml",
+        "compile", "-b", "arduino:zephyr:unoq",
+        "--output-dir", "${workspaceFolder}\\build",
+        "${workspaceFolder}\\invernadero\\sketch"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "W3) Ver la IP de mi compu (para MQTT_BROKER en main.py)",
+      "type": "process",
+      "command": "ssh",
+      "args": ["arduino@192.168.7.1", "echo Tu compu es: $SSH_CLIENT"],
+      "problemMatcher": []
+    },
+
+    // ------------------------------------------------------------- SERVIDOR (Docker Desktop)
+    {
+      "label": "servidor: compose up",
+      "hide": true,
+      "type": "process",
+      "command": "docker",
+      "args": ["compose", "--env-file", "config.env", "up", "-d", "--build"],
+      "options": { "cwd": "${workspaceFolder}\\servidor" },
+      "problemMatcher": []
+    },
+    {
+      "label": "3) Servidor: levantar en Docker Desktop (mssql + Mosquitto + puente + Grafana)",
+      "dependsOrder": "sequence",
+      "dependsOn": ["SQL Server: prender contenedor mssql", "servidor: compose up"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Servidor: estado",
+      "type": "process",
+      "command": "docker",
+      "args": ["compose", "--env-file", "config.env", "ps"],
+      "options": { "cwd": "${workspaceFolder}\\servidor" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Servidor: logs del puente",
+      "type": "process",
+      "command": "docker",
+      "args": ["compose", "--env-file", "config.env", "logs", "-f", "puente"],
+      "options": { "cwd": "${workspaceFolder}\\servidor" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Servidor: apagar",
+      "type": "process",
+      "command": "docker",
+      "args": ["compose", "--env-file", "config.env", "down"],
+      "options": { "cwd": "${workspaceFolder}\\servidor" },
+      "problemMatcher": []
+    },
+
+    // ------------------------------------------------------------- STM32 (sketch) y APP (Python) en el UNO Q
+    {
+      "label": "stm32: carpeta temporal",
+      "hide": true,
+      "type": "process",
+      "command": "ssh",
+      "args": [
+        "arduino@192.168.7.1",
+        "mkdir -p /tmp/remoteocd"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "stm32: copiar loader",
+      "hide": true,
+      "type": "process",
+      "command": "scp",
+      "args": [
+        "C:\\Tools\\TC1004B\\data\\packages\\arduino\\hardware\\zephyr\\1.1.0\\firmwares\\zephyr-arduino_uno_q_stm32u585xx.bin",
+        "arduino@192.168.7.1:/tmp/remoteocd/loader.bin"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "stm32: grabar loader",
+      "hide": true,
+      "type": "process",
+      "command": "ssh",
+      "args": [
+        "arduino@192.168.7.1",
+        "/opt/openocd/bin/openocd -d2 -s /opt/openocd -s /opt/openocd/share/openocd/scripts -f openocd_gpiod.cfg -c 'init' -c 'reset halt' -c 'flash write_image erase /tmp/remoteocd/loader.bin 0x08000000 bin' -c 'reset halt' -c 'resume' -c 'mww 0xE000EDF0 0xA05F0000' -c 'shutdown'"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "S0) UNA VEZ: grabar loader zephyr 1.1.0 en el STM32",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "stm32: carpeta temporal",
+        "stm32: copiar loader",
+        "stm32: grabar loader"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "stm32: copiar sketch",
+      "hide": true,
+      "type": "process",
+      "command": "scp",
+      "args": [
+        "${workspaceFolder}\\build\\sketch.ino.elf-zsk.bin",
+        "arduino@192.168.7.1:/tmp/remoteocd/sketch.bin"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "stm32: grabar sketch",
+      "hide": true,
+      "type": "process",
+      "command": "ssh",
+      "args": [
+        "arduino@192.168.7.1",
+        "/opt/openocd/bin/openocd -d2 -s /opt/openocd -s /opt/openocd/share/openocd/scripts -f openocd_gpiod.cfg -c 'init' -c 'reset halt' -c 'flash write_image erase /tmp/remoteocd/sketch.bin 0x8100000 bin' -c 'reset halt' -c 'resume' -c 'sleep 100' -c 'mww 0x40036400 0xCAFFEEEE' -c 'mww 0xE000EDF0 0xA05F0000' -c 'shutdown'"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "S1) Sketch: compilar y grabar en el STM32 (método de la clase)",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "W2) Compilar sketch en Windows (revisar errores)",
+        "stm32: carpeta temporal",
+        "stm32: copiar sketch",
+        "stm32: grabar sketch"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "0b) UNA VEZ: dejar la App solo con Python (el sketch se graba con S1)",
+      "type": "process",
+      "command": "ssh",
+      "args": [
+        "arduino@192.168.7.1",
+        "arduino-app-cli app stop user:invernadero; mv ~/ArduinoApps/invernadero/sketch ~/sketch-respaldo-invernadero && echo 'Listo: la App ya no toca el STM32'"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "app: copiar python",
+      "hide": true,
+      "type": "process",
+      "command": "scp",
+      "args": [
+        "${workspaceFolder}\\invernadero\\python\\main.py",
+        "${workspaceFolder}\\invernadero\\python\\requirements.txt",
+        "arduino@192.168.7.1:/home/arduino/ArduinoApps/invernadero/python/"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "app: reiniciar",
+      "hide": true,
+      "type": "process",
+      "command": "ssh",
+      "args": [
+        "arduino@192.168.7.1",
+        "arduino-app-cli app stop user:invernadero; arduino-app-cli app start user:invernadero"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "1) App (Python): subir e iniciar",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "app: copiar python",
+        "app: reiniciar"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "2) App: ver logs del Python",
+      "type": "process",
+      "command": "ssh",
+      "args": ["-t", "arduino@192.168.7.1", "arduino-app-cli app logs user:invernadero --follow"],
+      "problemMatcher": []
+    },
+    {
+      "label": "2b) App: ver monitor del sketch",
+      "type": "process",
+      "command": "ssh",
+      "args": ["-t", "arduino@192.168.7.1", "arduino-app-cli monitor"],
+      "problemMatcher": []
+    },
+    {
+      "label": "App: detener",
+      "type": "process",
+      "command": "ssh",
+      "args": ["arduino@192.168.7.1", "arduino-app-cli app stop user:invernadero"],
+      "problemMatcher": []
+    },
+
+    // ------------------------------------------------------------- PRUEBAS
+    {
+      "label": "4) MQTT: escuchar todo",
+      "type": "process",
+      "command": "docker",
+      "args": ["exec", "-it", "mosquitto", "mosquitto_sub", "-t", "invernadero/#", "-v"],
+      "problemMatcher": []
+    },
+    {
+      "label": "5) SQL Server: últimas 10 lecturas",
+      "type": "process",
+      "command": "docker",
+      "args": [
+        "exec", "-it", "mssql",
+        "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "${input:saPassword}", "-C",
+        "-d", "invernadero",
+        "-Q", "SET NOCOUNT ON; SELECT TOP 10 id, ts, nodo, temperatura, humedad, luz, nivel_agua, alarma FROM dbo.lecturas ORDER BY id DESC"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "SQL Server: probar contraseña de sa",
+      "type": "process",
+      "command": "docker",
+      "args": [
+        "exec", "-it", "mssql",
+        "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "${input:saPassword}", "-C",
+        "-Q", "SELECT name FROM sys.databases"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "SQL Server: prender contenedor mssql",
+      "type": "process",
+      "command": "docker",
+      "args": ["start", "mssql"],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "saPassword",
+      "type": "promptString",
+      "description": "Contraseña del usuario sa de SQL Server (la de config.env)",
+      "password": true
+    }
+  ]
+}

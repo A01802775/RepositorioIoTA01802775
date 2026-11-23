@@ -1,0 +1,10 @@
+# Carga automáticamente los dashboards (.json) de esta carpeta al arrancar Grafana
+apiVersion: 1
+
+providers:
+  - name: Invernadero
+    folder: Invernadero
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

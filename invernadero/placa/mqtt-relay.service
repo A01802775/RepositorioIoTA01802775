@@ -1,0 +1,12 @@
+[Unit]
+Description=Repetidor MQTT: contenedores del UNO Q -> Mosquitto en la compu (USB)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:1883,reuseaddr,fork EXEC:/usr/local/bin/mqtt-relay-destino
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

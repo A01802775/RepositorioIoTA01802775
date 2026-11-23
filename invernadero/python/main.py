@@ -17,6 +17,8 @@ así que se reinicia solo junto con la App.
 
 import json
 import os
+import socket
+import struct
 import time
 
 import paho.mqtt.client as mqtt
@@ -29,11 +31,25 @@ from arduino.app_utils import App, Bridge
 
 NODO_ID = "zona1"
 
-# IP de TU COMPU (donde corre Docker Desktop con Mosquitto), vista desde
-# la placa por el cable USB. Para saberla, en PowerShell:
-#     ssh arduino@192.168.7.1 "echo $SSH_CLIENT"
-# El primer número que sale es la IP (ej. 192.168.7.132).
-MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.7.132")
+def puerta_de_enlace():
+    """IP del Linux de la placa vista desde este contenedor (su gateway)."""
+    try:
+        with open("/proc/net/route") as f:
+            for linea in f.readlines()[1:]:
+                campos = linea.split()
+                if campos[1] == "00000000":  # ruta por defecto
+                    return socket.inet_ntoa(struct.pack("<L", int(campos[2], 16)))
+    except Exception:
+        pass
+    return "172.17.0.1"
+
+
+# El contenedor NO puede mandar directo a la compu por el cable USB
+# (NetworkManager lo bloquea). Por eso se conecta al repetidor MQTT
+# (servicio mqtt-relay, socat) que corre en el Linux de la placa, y ese
+# lo reenvía al Mosquitto de Docker Desktop en tu compu.
+# Se puede forzar otra dirección con la variable de entorno MQTT_BROKER.
+MQTT_BROKER = os.getenv("MQTT_BROKER") or puerta_de_enlace()
 MQTT_PUERTO = int(os.getenv("MQTT_PUERTO", "1883"))
 
 TOPICO_DATOS = f"invernadero/{NODO_ID}/datos"
@@ -60,9 +76,15 @@ def al_desconectar(client, userdata, flags, reason_code, properties):
     log(f"[MQTT] Desconectado ({reason_code}). Reintentando solo...")
 
 
+def al_fallar_conexion(client, userdata):
+    log(f"[MQTT] No se pudo conectar a {MQTT_BROKER}:{MQTT_PUERTO}. "
+        f"¿Está activo el servicio mqtt-relay en la placa y Mosquitto en Docker Desktop?")
+
+
 cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"unoq-{NODO_ID}")
 cliente.on_connect = al_conectar
 cliente.on_disconnect = al_desconectar
+cliente.on_connect_fail = al_fallar_conexion
 # Si la placa se apaga, el broker publica "offline" por nosotros
 cliente.will_set(TOPICO_ESTADO, "offline", qos=1, retain=True)
 cliente.reconnect_delay_set(min_delay=1, max_delay=30)

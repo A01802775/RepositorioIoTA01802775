@@ -1,0 +1,28 @@
+#!/bin/sh
+# -----------------------------------------------------------------------------
+#  mqtt-relay-destino — se ejecuta en el Linux del UNO Q por cada conexión MQTT
+#
+#  Busca la IP que la placa le dio a la compu conectada por USB (cambia cada
+#  vez que se reconecta) y conecta la conexión entrante con el Mosquitto de
+#  Docker Desktop en esa compu.
+#
+#  ¿Por qué existe? NetworkManager (modo "compartido" de usb0) rechaza el
+#  tráfico que los contenedores intentan mandar hacia usb0
+#  (regla nft: oifname "usb0" reject). El Linux de la placa sí puede, así que
+#  el contenedor le habla a este repetidor y el repetidor reenvía.
+# -----------------------------------------------------------------------------
+LEASES=/var/lib/NetworkManager/dnsmasq-usb0.leases
+PC=""
+
+# 1) La concesión DHCP más reciente de usb0 = la compu conectada ahora
+if [ -r "$LEASES" ]; then
+    PC=$(sort -n "$LEASES" | tail -n 1 | awk '{print $3}')
+fi
+
+# 2) Respaldo: vecinos conocidos en usb0
+if [ -z "$PC" ]; then
+    PC=$(ip -4 neigh show dev usb0 | awk '$1 != "192.168.7.1" && $NF != "FAILED" {print $1; exit}')
+fi
+
+[ -z "$PC" ] && exit 1
+exec socat - TCP:"$PC":1883,connect-timeout=5

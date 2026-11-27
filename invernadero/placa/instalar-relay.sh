@@ -1,5 +1,5 @@
 #!/bin/bash
-# Instala el repetidor MQTT como servicio (arranca solo con la placa).
+# Instala o actualiza el repetidor MQTT como servicio (arranca solo con la placa).
 # Uso (en la placa):  sudo bash ~/relay/instalar-relay.sh
 set -e
 cd "$(dirname "$0")"
@@ -18,12 +18,14 @@ sleep 1
 
 echo "------------------------------------------------------------"
 echo "Servicio: $(systemctl is-active mqtt-relay.service)"
-LEASES=/var/lib/NetworkManager/dnsmasq-usb0.leases
-if [ -r "$LEASES" ]; then
-    echo "Compu detectada por USB: $(sort -n "$LEASES" | tail -n 1 | awk '{print $3}')"
-else
-    echo "Aviso: no existe $LEASES; se usará la tabla de vecinos (ip neigh)"
-fi
+echo "WiFi de la placa: $(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}')"
+for IP in 192.168.137.1 $(sort -n /var/lib/NetworkManager/dnsmasq-usb0.leases 2>/dev/null | tail -n 1 | awk '{print $3}'); do
+    if timeout 1 bash -c "</dev/tcp/$IP/1883" 2>/dev/null; then
+        echo "Mosquitto alcanzable en $IP"
+    else
+        echo "Mosquitto NO alcanzable en $IP"
+    fi
+done
 if timeout 5 bash -c '</dev/tcp/127.0.0.1/1883' 2>/dev/null; then
     echo "RELAY_OK: el repetidor escucha en el puerto 1883"
 else

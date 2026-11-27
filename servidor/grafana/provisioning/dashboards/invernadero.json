@@ -8,7 +8,7 @@
   "timezone": "browser",
   "refresh": "5s",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 3,
   "editable": true,
   "time": {
     "from": "now-1h",
@@ -59,7 +59,7 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -128,8 +128,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 5,
+        "w": 4,
+        "x": 4,
         "y": 0
       },
       "targets": [
@@ -197,8 +197,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 10,
+        "w": 4,
+        "x": 8,
         "y": 0
       },
       "targets": [
@@ -262,8 +262,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 15,
+        "w": 4,
+        "x": 12,
         "y": 0
       },
       "targets": [
@@ -332,7 +332,7 @@
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 20,
+        "x": 16,
         "y": 0
       },
       "targets": [
@@ -404,6 +404,454 @@
       }
     },
     {
+      "id": 9,
+      "type": "stat",
+      "title": "📡 Arduino",
+      "datasource": {
+        "type": "mssql",
+        "uid": "mssql-invernadero"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "mssql-invernadero"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "-- Conectado = llegó una lectura en los últimos 20 s (la placa manda una cada 5 s)\nSELECT CASE WHEN DATEDIFF(SECOND, MAX(ts), SYSUTCDATETIME()) <= 20 THEN 1 ELSE 0 END AS conectado\nFROM lecturas WHERE nodo = '$nodo'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DESCONECTADO",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "CONECTADO",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "DESCONECTADO",
+                  "color": "red",
+                  "index": 2
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "description": "Verde si el Arduino mandó una lectura en los últimos 20 segundos."
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "📟 Pantalla del Arduino (lo que dice la LCD)",
+      "datasource": {
+        "type": "mssql",
+        "uid": "mssql-invernadero"
+      },
+      "description": "Retransmite el mensaje de la mini interfaz de la LCD: alarma, sensores no detectados, todo normal o Arduino no conectado.",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "mssql-invernadero"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "-- Lo mismo que dice la LCD. Si no llegan datos en 20 s: Arduino no conectado\nSELECT CASE\n         WHEN u.ts IS NULL OR DATEDIFF(SECOND, u.ts, SYSUTCDATETIME()) > 20\n           THEN N'❌ Arduino no conectado'\n         ELSE COALESCE(u.mensaje, N'Sin mensaje (graba el sketch nuevo con S1)')\n       END AS mensaje\nFROM (SELECT 1 AS x) AS d\nLEFT JOIN (SELECT TOP 1 ts, mensaje FROM lecturas WHERE nodo = '$nodo' ORDER BY ts DESC) AS u ON 1 = 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#5A5A5A"
+          },
+          "mappings": [
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^🚨.*",
+                "result": {
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^⚠.*",
+                "result": {
+                  "color": "orange",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^✅.*",
+                "result": {
+                  "color": "green",
+                  "index": 2
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^❌.*",
+                "result": {
+                  "color": "#5A5A5A",
+                  "index": 3
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^🔌.*",
+                "result": {
+                  "color": "blue",
+                  "index": 4
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^mensaje$/",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "text": {
+          "valueSize": 30
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "⏱️ Última lectura hace",
+      "datasource": {
+        "type": "mssql",
+        "uid": "mssql-invernadero"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "mssql-invernadero"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT DATEDIFF(SECOND, MAX(ts), SYSUTCDATETIME()) AS segundos\nFROM lecturas WHERE nodo = '$nodo'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 21
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "📶 MQTT (Last Will)",
+      "datasource": {
+        "type": "mssql",
+        "uid": "mssql-invernadero"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "mssql-invernadero"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "-- 'online' lo publica la placa al conectarse; 'offline' lo publica Mosquitto\n-- (Last Will) cuando la placa se desconecta sin avisar\nSELECT TOP 1 CASE estado WHEN 'online' THEN 1 ELSE 0 END AS mqtt\nFROM conexiones WHERE nodo = '$nodo' ORDER BY ts DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "OFFLINE",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "ONLINE",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "OFFLINE",
+                  "color": "red",
+                  "index": 2
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto"
+      },
+      "description": "Último estado reportado por MQTT en invernadero/<nodo>/estado. Puede tardar ~45 s en pasar a OFFLINE (keepalive de 30 s x 1.5)."
+    },
+    {
+      "id": 12,
+      "type": "state-timeline",
+      "title": "Historial de conexión del Arduino",
+      "datasource": {
+        "type": "mssql",
+        "uid": "mssql-invernadero"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 16,
+        "x": 8,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "mssql-invernadero"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "-- 1 = llegaban lecturas, 0 = hueco de más de 20 s sin lecturas\nWITH l AS (\n  SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev\n  FROM lecturas WHERE nodo = '$nodo' AND $__timeFilter(ts)\n)\nSELECT time, Arduino FROM (\n  SELECT ts AS time, 1 AS Arduino FROM l\n  UNION ALL\n  SELECT DATEADD(SECOND, 10, prev), 0 FROM l WHERE DATEDIFF(SECOND, prev, ts) > 20\n  UNION ALL\n  SELECT DATEADD(SECOND, 10, MAX(ts)), 0 FROM l\n  HAVING DATEDIFF(SECOND, MAX(ts), SYSUTCDATETIME()) > 20\n) t\nORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Desconectado",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Conectado",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "center",
+        "rowHeight": 0.8,
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
       "id": 6,
       "type": "timeseries",
       "title": "Temperatura y humedad",
@@ -415,7 +863,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 5
+        "y": 14
       },
       "targets": [
         {
@@ -466,7 +914,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 5
+        "y": 14
       },
       "targets": [
         {
@@ -508,6 +956,124 @@
       }
     },
     {
+      "id": 14,
+      "type": "table",
+      "title": "📜 Historial de mensajes de la LCD",
+      "datasource": {
+        "type": "mssql",
+        "uid": "mssql-invernadero"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "mssql",
+            "uid": "mssql-invernadero"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "-- Solo los CAMBIOS de estado (no cada lectura) + conexiones/desconexiones\nWITH m AS (\n  SELECT ts, codigo, sensores, mensaje,\n         LAG(codigo)   OVER (ORDER BY ts) AS codigo_prev,\n         LAG(sensores) OVER (ORDER BY ts) AS sensores_prev\n  FROM lecturas\n  WHERE nodo = '$nodo' AND $__timeFilter(ts) AND mensaje IS NOT NULL\n)\nSELECT TOP 20 Hora, Mensaje FROM (\n  SELECT ts AS Hora, mensaje AS Mensaje FROM m\n  WHERE codigo_prev IS NULL OR codigo <> codigo_prev OR sensores <> sensores_prev\n  UNION ALL\n  SELECT ts, CASE estado WHEN 'online' THEN N'🔌 Arduino conectado (MQTT online)'\n                         ELSE N'❌ Arduino no conectado (MQTT offline)' END\n  FROM conexiones WHERE nodo = '$nodo' AND $__timeFilter(ts)\n) AS t\nORDER BY Hora DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mensaje"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^🚨.*",
+                      "result": {
+                        "color": "red",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^⚠.*",
+                      "result": {
+                        "color": "orange",
+                        "index": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^✅.*",
+                      "result": {
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^❌.*",
+                      "result": {
+                        "color": "#5A5A5A",
+                        "index": 3
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^🔌.*",
+                      "result": {
+                        "color": "blue",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hora"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
       "id": 8,
       "type": "table",
       "title": "Últimas 20 lecturas",
@@ -519,7 +1085,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 31
       },
       "targets": [
         {

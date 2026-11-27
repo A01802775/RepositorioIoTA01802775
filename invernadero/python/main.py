@@ -4,11 +4,13 @@ Proyecto: Invernadero IoT — TC1004B
 
 Qué hace:
   1. Recibe del MCU cada lectura por el Bridge ("lectura").
-  2. La convierte a JSON y la publica por MQTT en:
+  2. Arma el MISMO mensaje que muestra la LCD (alarma / sensor no detectado /
+     todo normal) para que Grafana lo "retransmita".
+  3. La convierte a JSON y la publica por MQTT en:
         invernadero/<NODO_ID>/datos
      y el estado del nodo (online/offline) en:
         invernadero/<NODO_ID>/estado
-  3. Cada 5 s le avisa al MCU si MQTT está conectado ("estado_mqtt")
+  4. Cada 5 s le avisa al MCU si MQTT está conectado ("estado_mqtt")
      para que lo muestre en la LCD.
 
 App Lab / arduino-app-cli corre este archivo dentro de un contenedor,
@@ -98,21 +100,75 @@ cliente.loop_start()
 #  BLOQUE 3: RECEPCIÓN DESDE EL MCU (Bridge)
 # =============================================================================
 
-def recibir_lectura(temp, hum, luz, agua, alarma, dht_ok):
+# Códigos de estado (iguales a los del dashboard de Grafana)
+CODIGO_OK = 0            # Todo detectado con normalidad
+CODIGO_NO_CONECTADO = 1  # (lo pone Grafana cuando dejan de llegar datos)
+CODIGO_SENSORES = 2      # Uno o más sensores no se detectan
+CODIGO_ALARMA = 3        # Algún sensor fuera de rango
+
+NOMBRES_ESTADO = {-1: "BAJA", 1: "ALTA"}
+
+
+def decodificar_alertas(alertas):
+    """Del sketch (bitsAlertas): 2 bits por sensor, 0=BAJO 1=OK 2=ALTO.
+    Devuelve {"temp": -1/0/1, "hum": ..., "agua": ..., "luz": ...}"""
+    return {nombre: ((alertas >> (2 * i)) & 3) - 1
+            for i, nombre in enumerate(("temp", "hum", "agua", "luz"))}
+
+
+def armar_mensaje(temp, hum, luz, agua, alarma, detectados, estados):
+    """Mismo texto que la mini interfaz de la LCD, en una sola línea."""
+    faltan = [n for n, ok in (("DHT11", detectados["dht11"]), ("Agua", detectados["agua"]),
+                              ("Luz", detectados["luz"]), ("LCD", detectados["lcd"])) if not ok]
+    partes = []
+    if alarma:
+        detalle = []
+        if estados["temp"]: detalle.append(f"Temp {NOMBRES_ESTADO[estados['temp']]} ({temp} °C)")
+        if estados["hum"]:  detalle.append(f"Humedad {NOMBRES_ESTADO[estados['hum']]} ({hum} %)")
+        if estados["agua"]: detalle.append(f"Agua {NOMBRES_ESTADO[estados['agua']]} ({agua} %)")
+        if estados["luz"]:  detalle.append(f"Luz {NOMBRES_ESTADO[estados['luz']]} ({luz} %)")
+        partes.append("🚨 ALARMA: " + (", ".join(detalle) or "revisa sensores"))
+    if faltan:
+        partes.append("⚠️ Uno o más sensores no se detectan: " + ", ".join(faltan))
+    if not partes:
+        return CODIGO_OK, "✅ Todo detectado con normalidad"
+    codigo = CODIGO_ALARMA if alarma else CODIGO_SENSORES
+    return codigo, " · ".join(partes)
+
+
+def recibir_lectura(temp, hum, luz, agua, alarma, dht_ok, sensores=None, alertas=0):
     """Lo llama el sketch con Bridge.notify("lectura", ...).
-    ⚠ El orden de los argumentos debe coincidir con enviarLectura() del sketch."""
+    ⚠ El orden de los argumentos debe coincidir con enviarLectura() del sketch.
+    sensores (bits): 1=DHT11 2=agua 4=luz 8=LCD   (1 = detectado)
+    alertas  (bits): ver decodificar_alertas()
+    Si llega un sketch viejo (sin sensores/alertas) se asume todo detectado."""
+    if sensores is None:
+        sensores = 0b1110 | (1 if dht_ok else 0)
+        alertas = 0b01010101  # todo OK
+    detectados = {
+        "dht11": bool(sensores & 1),
+        "agua": bool(sensores & 2),
+        "luz": bool(sensores & 4),
+        "lcd": bool(sensores & 8),
+    }
+    codigo, mensaje = armar_mensaje(temp, hum, luz, agua, alarma,
+                                    detectados, decodificar_alertas(alertas))
     datos = {
         "nodo": NODO_ID,
+        # Sensor que falló o no está conectado -> null (no se guarda ruido)
         "temp": temp if dht_ok else None,
         "hum": hum if dht_ok else None,
-        "luz": luz,
-        "agua": agua,
+        "luz": luz if detectados["luz"] else None,
+        "agua": agua if detectados["agua"] else None,
         "alarma": bool(alarma),
+        "sensores": int(sensores),
+        "codigo": codigo,
+        "mensaje": mensaje,
     }
-    payload = json.dumps(datos)
+    payload = json.dumps(datos, ensure_ascii=False)
 
     if cliente.is_connected():
-        cliente.publish(TOPICO_DATOS, payload, qos=0)
+        cliente.publish(TOPICO_DATOS, payload.encode("utf-8"), qos=0)
         log(f"[MQTT] -> {TOPICO_DATOS} : {payload}")
     else:
         log(f"[MQTT] Sin conexión, lectura descartada: {payload}")

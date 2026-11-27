@@ -12,14 +12,20 @@
  *
  *  Qué hace:
  *    1. Lee los sensores cada 5 s.
- *    2. Compara CADA sensor contra su rango permitido (mínimo y máximo).
- *       Si alguno se sale: suena el buzzer y la LCD muestra el aviso
- *       (ej. "Temp ALTA: 35C"). Si hay varias alertas, las va rotando.
- *    3. Sin alertas, la LCD rota entre clima, agua/luz y conexión.
- *    4. Manda cada lectura al lado Linux por el Bridge:
+ *    2. Detecta qué sensores están conectados (DHT11, agua, luz y LCD).
+ *    3. Compara CADA sensor detectado contra su rango (mínimo y máximo).
+ *       Si alguno se sale: suena el buzzer y hay ALARMA.
+ *    4. Mini interfaz en la LCD (rota las pantallas que apliquen):
+ *         "!! ALARMA !! 1/2" / "Temp ALTA: 35C"     <- hay alarma
+ *         "No se detecta:"   / "DHT11 Agua"         <- falta algún sensor
+ *         "Arduino NO"       / "conectado a PC"     <- sin MQTT
+ *         "Todo detectado"   / "con normalidad"     <- todo bien
+ *       y después clima y agua/luz.
+ *    5. Manda cada lectura al lado Linux por el Bridge:
  *         Bridge.notify("lectura", ...)
- *       El Python (python/main.py) la recibe y la publica por MQTT.
- *    5. Recibe del Linux si MQTT está conectado ("estado_mqtt").
+ *       El Python (python/main.py) arma el MISMO mensaje y lo publica por
+ *       MQTT, para que Grafana "retransmita" lo que dice la LCD.
+ *    6. Recibe del Linux si MQTT está conectado ("estado_mqtt").
  *
  * ----------------------------------------------------------------------------
  *  CONEXIONES (UNO Q: pines a 3.3V)
@@ -89,10 +95,22 @@ const int LUZ_MIN  = 10,  LUZ_MAX  = 95;   // %
 // noche, pongan esto en false (se sigue midiendo y graficando).
 const bool VIGILAR_LUZ = true;
 
+// --- Detección de sensores ---
+// DHT11 y LCD se detectan seguro (son digitales: contestan o no).
+// Agua y luz son analógicos: se detecta si el pin está "al aire" jalándolo
+// con las resistencias internas (pull-up y pull-down, seguras para la placa).
+// Pin al aire  -> sigue al jalón -> diferencia grande (> UMBRAL_FLOTANTE).
+// Con sensor   -> el sensor manda -> diferencia chica.
+// Si marca "NO detectado" con el sensor puesto: mira "prueba alto/bajo"
+// en el monitor y sube el umbral, o pon DETECTAR_ANALOGICOS = false.
+const bool DETECTAR_ANALOGICOS = true;
+const int  UMBRAL_FLOTANTE     = 300;     // en lectura cruda (0–1023)
+const unsigned long TIMEOUT_MQTT = 15000; // sin aviso del Linux en 15 s = no conectado
+
 // --- Tiempos (ms) ---
 const unsigned long INTERVALO_LECTURA  = 5000;  // leer sensores
-const unsigned long INTERVALO_PANTALLA = 3000;  // rotar pantallas normales
-const unsigned long INTERVALO_ALERTA   = 2000;  // rotar mensajes de alerta
+const unsigned long INTERVALO_PANTALLA = 3000;  // rotar pantallas sin alarma
+const unsigned long INTERVALO_ALERTA   = 2000;  // rotar pantallas con alarma
 const unsigned long INTERVALO_PITIDO   = 300;   // parpadeo del buzzer
 
 
@@ -131,19 +149,25 @@ struct Lectura {
 Lectura lectura;
 
 // Lo escribe el Bridge desde otro hilo -> volatile
-volatile bool mqttConectado = false;
+volatile bool          mqttConectado   = false;
+volatile unsigned long ultimoAvisoMqtt = 0;   // millis() del último aviso del Linux
+
+// Sensores detectados (cambian solo si el resultado se repite 2 veces seguidas)
+bool dhtDetectado  = false;  int seguidasDHT  = 0;
+bool aguaDetectada = true;   int seguidasAgua = 0;
+bool luzDetectada  = true;   int seguidasLuz  = 0;
+bool primeraLectura = false;  // en la 1a lectura se acepta el resultado directo
+int  pruebaAlto = 0, pruebaBajo = 0;   // última prueba de pin al aire (monitor)
 
 unsigned long ultimaLectura        = 0;
 unsigned long ultimoCambioPantalla = 0;
-unsigned long ultimoCambioAlerta   = 0;
 unsigned long ultimoPitido         = 0;
-bool lcdPresente   = false;   // se detecta en setup()
+bool lcdPresente   = false;   // se revisa cada 5 s (se puede conectar después)
 unsigned long ultimoLatido = 0;
 bool estadoLed     = false;
 int  paginaLCD     = 0;
-int  indiceAlerta  = 0;
+int  firmaPrevia   = -1;      // para saber si cambió el estado general
 bool estadoBuzzer  = false;
-bool alarmaPrevia  = false;
 
 
 // ============================================================================
@@ -153,7 +177,25 @@ bool alarmaPrevia  = false;
 // Linux nos avisa si el MQTT está conectado.
 // Corre en el hilo del Bridge: SOLO guardar el valor, nada de imprimir.
 void recibirEstadoMqtt(bool conectado) {
-  mqttConectado = conectado;
+  mqttConectado   = conectado;
+  ultimoAvisoMqtt = millis();
+}
+
+// bit0 = DHT11, bit1 = agua, bit2 = luz, bit3 = LCD   (1 = detectado)
+int bitsSensores() {
+  return (dhtDetectado  ? 1 : 0) |
+         (aguaDetectada ? 2 : 0) |
+         (luzDetectada  ? 4 : 0) |
+         (lcdPresente   ? 8 : 0);
+}
+
+// 2 bits por sensor: 0 = BAJO, 1 = OK, 2 = ALTO
+// bits 0-1 temp, 2-3 humedad, 4-5 agua, 6-7 luz
+int bitsAlertas() {
+  return ((lectura.estadoTemp + 1) & 3)       |
+         (((lectura.estadoHum  + 1) & 3) << 2) |
+         (((lectura.estadoAgua + 1) & 3) << 4) |
+         (((lectura.estadoLuz  + 1) & 3) << 6);
 }
 
 // Manda la lectura completa al Python.
@@ -165,7 +207,9 @@ void enviarLectura() {
                 lectura.luz,
                 lectura.agua,
                 lectura.alarma,
-                lectura.dhtOk);
+                lectura.dhtOk,
+                bitsSensores(),
+                bitsAlertas());
 }
 
 
@@ -187,9 +231,49 @@ int aPorcentaje(int crudo, int crudoMin, int crudoMax) {
   return constrain(p, 0, 100);
 }
 
+// Cambia 'detectado' solo si 'resultado' se repite 2 lecturas seguidas
+// (evita que un error suelto haga parpadear "No se detecta").
+void confirmarDeteccion(bool resultado, bool &detectado, int &seguidas) {
+  if (primeraLectura || resultado == detectado) {
+    detectado = resultado;
+    seguidas = 0;
+    return;
+  }
+  if (++seguidas >= 2) {
+    detectado = resultado;
+    seguidas = 0;
+  }
+}
+
+// Prueba de pin "al aire" para sensores analógicos.
+// Jala el pin a 3.3V y luego a GND con las resistencias INTERNAS (~40k,
+// no dañan nada) y lee con el ADC justo después:
+//   pin al aire -> la lectura sigue al jalón (alto ≈ 1000, bajo ≈ 0)
+//   con sensor  -> el sensor manda; alto y bajo salen casi iguales
+// analogRead() regresa solo el pin a modo analógico.
+bool pinAnalogicoConectado(int pin) {
+  pinMode(pin, INPUT_PULLUP);
+  delay(2);
+  pruebaAlto = analogRead(pin);
+  pinMode(pin, INPUT_PULLDOWN);
+  delay(2);
+  pruebaBajo = analogRead(pin);
+  return (pruebaAlto - pruebaBajo) < UMBRAL_FLOTANTE;
+}
+
+void imprimirDeteccion(int crudo, bool detectado) {
+  Monitor.print(crudo);
+  if (DETECTAR_ANALOGICOS) {
+    Monitor.print("  prueba alto/bajo="); Monitor.print(pruebaAlto);
+    Monitor.print("/");                   Monitor.print(pruebaBajo);
+  }
+  Monitor.println(detectado ? "  -> detectado" : "  -> NO detectado");
+}
+
 void leerDHT() {
   int t = 0, h = 0;
   int resultado = dht11.readTemperatureHumidity(t, h);
+  confirmarDeteccion(resultado == 0, dhtDetectado, seguidasDHT);
 
   if (resultado != 0) {
     lectura.dhtOk = false;
@@ -203,16 +287,22 @@ void leerDHT() {
 }
 
 void leerAgua() {
+  bool conectado = DETECTAR_ANALOGICOS ? pinAnalogicoConectado(PIN_AGUA) : true;
+  confirmarDeteccion(conectado, aguaDetectada, seguidasAgua);
+
   int crudo = leerAnalogicoPromedio(PIN_AGUA);
   lectura.agua = aPorcentaje(crudo, AGUA_CRUDO_SECO, AGUA_CRUDO_LLENO);
-  Monitor.print("[Agua] crudo="); Monitor.println(crudo);
+  Monitor.print("[Agua] crudo="); imprimirDeteccion(crudo, aguaDetectada);
 }
 
 void leerLuz() {
+  bool conectado = DETECTAR_ANALOGICOS ? pinAnalogicoConectado(PIN_LUZ) : true;
+  confirmarDeteccion(conectado, luzDetectada, seguidasLuz);
+
   int crudo = leerAnalogicoPromedio(PIN_LUZ);
   if (LUZ_INVERTIDA) crudo = 1023 - crudo;   // para módulos que bajan con la luz
   lectura.luz = aPorcentaje(crudo, LUZ_CRUDO_OSCURO, LUZ_CRUDO_SOL);
-  Monitor.print("[Luz ] crudo="); Monitor.println(crudo);
+  Monitor.print("[Luz ] crudo="); imprimirDeteccion(crudo, luzDetectada);
 }
 
 void leerSensores() {
@@ -254,11 +344,12 @@ int evaluarRango(int valor, int minimo, int maximo) {
 }
 
 void evaluarAlarma() {
-  // Si el DHT11 falló no podemos juzgar temperatura/humedad
+  // Un sensor que falló o no está conectado NO puede dar alarma
+  // (su lectura sería ruido). Eso se avisa aparte: "No se detecta".
   lectura.estadoTemp = lectura.dhtOk ? evaluarRango(lectura.temperatura, TEMP_MIN, TEMP_MAX) : OK;
   lectura.estadoHum  = lectura.dhtOk ? evaluarRango(lectura.humedad,     HUM_MIN,  HUM_MAX)  : OK;
-  lectura.estadoAgua = evaluarRango(lectura.agua, AGUA_MIN, AGUA_MAX);
-  lectura.estadoLuz  = VIGILAR_LUZ ? evaluarRango(lectura.luz, LUZ_MIN, LUZ_MAX) : OK;
+  lectura.estadoAgua = aguaDetectada ? evaluarRango(lectura.agua, AGUA_MIN, AGUA_MAX) : OK;
+  lectura.estadoLuz  = (VIGILAR_LUZ && luzDetectada) ? evaluarRango(lectura.luz, LUZ_MIN, LUZ_MAX) : OK;
 
   lectura.A = (lectura.estadoTemp != OK);
   lectura.B = (lectura.estadoHum  != OK);
@@ -326,53 +417,128 @@ int contarAlertas() {
   return lectura.A + lectura.B + lectura.C + lectura.D;
 }
 
-// Pantalla de ALERTA: tiene prioridad sobre las normales
-void mostrarAlerta() {
-  int total = contarAlertas();
-  if (indiceAlerta >= total) indiceAlerta = 0;
+// ---------------------------------------------------------------------------
+//  MINI INTERFAZ: estado general
+// ---------------------------------------------------------------------------
 
-  char l1[17], l2[17];
-  snprintf(l1, sizeof(l1), "!ALERTA! %d de %d", indiceAlerta + 1, total);
-  if (!mensajeAlerta(indiceAlerta, l2, sizeof(l2))) {
-    snprintf(l2, sizeof(l2), "Revisa sensores");
-  }
-  escribirLinea(0, l1);
-  escribirLinea(1, l2);
+// "Conectado" = el Linux dice que MQTT está conectado Y nos avisó hace poco
+// (si la App de Python se cae, dejan de llegar avisos -> no conectado)
+bool arduinoConectado() {
+  return mqttConectado && (millis() - ultimoAvisoMqtt < TIMEOUT_MQTT);
 }
 
-// Pantallas normales (sin alertas)
-void mostrarNormal() {
-  char l1[17], l2[17];
+int contarFaltantes() {
+  return (dhtDetectado ? 0 : 1) + (aguaDetectada ? 0 : 1) + (luzDetectada ? 0 : 1);
+}
 
-  switch (paginaLCD) {
-    case 0:  // Clima
-      if (lectura.dhtOk) {
-        snprintf(l1, sizeof(l1), "Temp: %d C", lectura.temperatura);
-        snprintf(l2, sizeof(l2), "Humedad: %d%%", lectura.humedad);
-      } else {
-        snprintf(l1, sizeof(l1), "DHT11: error");
-        snprintf(l2, sizeof(l2), "Revisa cable D2");
+// Ej: "DHT11 Agua Luz" (máx. 14 caracteres, cabe en la LCD)
+void listaFaltantes(char* destino, size_t tam) {
+  snprintf(destino, tam, "%s%s%s",
+           dhtDetectado  ? "" : "DHT11 ",
+           aguaDetectada ? "" : "Agua ",
+           luzDetectada  ? "" : "Luz");
+}
+
+// Número que cambia cuando cambia algo importante (para refrescar la LCD ya)
+int firmaEstado() {
+  return (lectura.alarma      ? 1  : 0) |
+         (dhtDetectado        ? 0  : 2) |
+         (aguaDetectada       ? 0  : 4) |
+         (luzDetectada        ? 0  : 8) |
+         (arduinoConectado()  ? 0  : 16);
+}
+
+// Arma la pantalla número n. Devuelve false si ya no hay más pantallas.
+// Orden (prioridad):
+//   1. ALARMA (una pantalla por cada sensor fuera de rango)
+//   2. "No se detecta: ..."          si falta algún sensor
+//   3. "Arduino NO conectado a PC"   si no hay MQTT
+//   4. "Todo detectado con normalidad" si nada de lo anterior
+//   5. Clima y agua/luz (solo cuando NO hay alarma)
+bool generarPagina(int n, char* l1, char* l2) {
+  const size_t T = 17;
+  int i = 0;
+
+  if (lectura.alarma) {
+    int total = contarAlertas();
+    for (int k = 0; k < total; k++, i++) {
+      if (i == n) {
+        snprintf(l1, T, "!! ALARMA !! %d/%d", k + 1, total);
+        if (!mensajeAlerta(k, l2, T)) snprintf(l2, T, "Revisa sensores");
+        return true;
       }
-      break;
-
-    case 1:  // Agua y luz
-      snprintf(l1, sizeof(l1), "Agua: %d%%", lectura.agua);
-      snprintf(l2, sizeof(l2), "Luz: %d%%", lectura.luz);
-      break;
-
-    default: // Estado general
-      snprintf(l1, sizeof(l1), "Todo en rango OK");
-      snprintf(l2, sizeof(l2), "MQTT: %s", mqttConectado ? "conectado" : "sin conexion");
-      break;
+    }
   }
 
-  escribirLinea(0, l1);
-  escribirLinea(1, l2);
+  if (contarFaltantes() > 0) {
+    if (i == n) {
+      snprintf(l1, T, "No se detecta:");
+      listaFaltantes(l2, T);
+      return true;
+    }
+    i++;
+  }
+
+  if (!arduinoConectado()) {
+    if (i == n) {
+      snprintf(l1, T, "Arduino NO");
+      snprintf(l2, T, "conectado a PC");
+      return true;
+    }
+    i++;
+  }
+
+  if (lectura.alarma) return false;   // con alarma no se muestran datos normales
+
+  if (contarFaltantes() == 0 && arduinoConectado()) {
+    if (i == n) {
+      snprintf(l1, T, "Todo detectado");
+      snprintf(l2, T, "con normalidad");
+      return true;
+    }
+    i++;
+  }
+
+  if (dhtDetectado && lectura.dhtOk) {
+    if (i == n) {
+      snprintf(l1, T, "Temp: %d C", lectura.temperatura);
+      snprintf(l2, T, "Humedad: %d%%", lectura.humedad);
+      return true;
+    }
+    i++;
+  }
+
+  if (aguaDetectada || luzDetectada) {
+    if (i == n) {
+      if (aguaDetectada) snprintf(l1, T, "Agua: %d%%", lectura.agua);
+      else               snprintf(l1, T, "Agua: --");
+      if (luzDetectada)  snprintf(l2, T, "Luz: %d%%", lectura.luz);
+      else               snprintf(l2, T, "Luz: --");
+      return true;
+    }
+    i++;
+  }
+
+  return false;
 }
 
-void actualizarLCD() {
-  if (lectura.alarma) mostrarAlerta();
-  else                mostrarNormal();
+int contarPaginas() {
+  char a[17], b[17];
+  int n = 0;
+  while (generarPagina(n, a, b)) n++;
+  return n;
+}
+
+// Muestra la pantalla actual (paginaLCD). Si se pasó del final, vuelve a 0.
+void mostrarPagina() {
+  int total = contarPaginas();
+  if (total == 0) return;
+  if (paginaLCD >= total) paginaLCD = 0;
+
+  char l1[17], l2[17];
+  generarPagina(paginaLCD, l1, l2);
+  escribirLinea(0, l1);
+  escribirLinea(1, l2);
 }
 
 
@@ -397,6 +563,11 @@ void imprimirResumen() {
   for (int n = 0; mensajeAlerta(n, msg, sizeof(msg)); n++) {
     Monitor.print("  ! "); Monitor.println(msg);
   }
+  Monitor.print("Detectados: DHT11="); Monitor.print(dhtDetectado);
+  Monitor.print(" Agua="); Monitor.print(aguaDetectada);
+  Monitor.print(" Luz="); Monitor.print(luzDetectada);
+  Monitor.print(" LCD="); Monitor.print(lcdPresente);
+  Monitor.print(" | Conectado a PC="); Monitor.println(arduinoConectado());
 }
 
 
@@ -408,6 +579,22 @@ void imprimirResumen() {
 bool detectarLCD() {
   Wire.beginTransmission(LCD_DIRECCION);
   return (Wire.endTransmission() == 0);
+}
+
+// Revisa cada 5 s si la LCD está: así se puede conectar después de prender
+// (⚠ mejor conectar/desconectar cables con la placa APAGADA)
+void vigilarLCD() {
+  bool hay = detectarLCD();
+  if (hay && !lcdPresente) {
+    lcdPresente = true;
+    lcd.init();
+    lcd.backlight();
+    firmaPrevia = -1;            // forzar a redibujar
+    Monitor.println("[LCD] conectada");
+  } else if (!hay && lcdPresente) {
+    lcdPresente = false;
+    Monitor.println("[LCD] desconectada");
+  }
 }
 
 // LED de la placa: parpadea mientras el loop() esté vivo
@@ -450,54 +637,50 @@ void setup() {
   escribirLinea(1, "Bridge OK");
 
   // 3) Primera lectura inmediata
+  primeraLectura = true;
   leerSensores();
   evaluarAlarma();
   enviarLectura();
-  actualizarLCD();
-  alarmaPrevia = lectura.alarma;
+  primeraLectura = false;
+  firmaPrevia = firmaEstado();
+  mostrarPagina();
   Monitor.println("[4] === MCU invernadero listo ===");
 }
 
 void loop() {
   unsigned long ahora = millis();
 
-  // 1) Cada 5 s: leer -> evaluar -> mandar a Linux
+  // 1) Cada 5 s: revisar LCD -> leer -> evaluar -> mandar a Linux
   if (ahora - ultimaLectura >= INTERVALO_LECTURA) {
     ultimaLectura = ahora;
+    vigilarLCD();
     leerSensores();
     evaluarAlarma();
     imprimirResumen();
     enviarLectura();
-
-    // Si la alarma acaba de activarse o apagarse, refrescar la LCD YA
-    if (lectura.alarma != alarmaPrevia) {
-      alarmaPrevia = lectura.alarma;
-      indiceAlerta = 0;
-      paginaLCD = 0;
-      ultimoCambioAlerta = ahora;
-      ultimoCambioPantalla = ahora;
-      actualizarLCD();
-    }
   }
 
-  // 2) Rotar la LCD
-  if (lectura.alarma) {
-    if (ahora - ultimoCambioAlerta >= INTERVALO_ALERTA) {
-      ultimoCambioAlerta = ahora;
-      indiceAlerta = (indiceAlerta + 1) % max(1, contarAlertas());
-      mostrarAlerta();
-    }
-  } else {
-    if (ahora - ultimoCambioPantalla >= INTERVALO_PANTALLA) {
-      ultimoCambioPantalla = ahora;
-      paginaLCD = (paginaLCD + 1) % 3;
-      mostrarNormal();
-    }
+  // 2) Si cambió algo importante (alarma, sensores o conexión):
+  //    mostrarlo YA, empezando por la primera pantalla
+  int firma = firmaEstado();
+  if (firma != firmaPrevia) {
+    firmaPrevia = firma;
+    paginaLCD = 0;
+    ultimoCambioPantalla = ahora;
+    mostrarPagina();
   }
 
-  // 3) Buzzer siempre (parpadeo fluido)
+  // 3) Rotar las pantallas (más rápido si hay alarma)
+  unsigned long intervalo = lectura.alarma ? INTERVALO_ALERTA : INTERVALO_PANTALLA;
+  if (ahora - ultimoCambioPantalla >= intervalo) {
+    ultimoCambioPantalla = ahora;
+    paginaLCD++;
+    mostrarPagina();
+  }
+
+  // 4) Buzzer siempre (parpadeo fluido)
   controlarBuzzer();
 
-  // 4) LED de la placa parpadeando = el programa está vivo
+  // 5) LED de la placa parpadeando = el programa está vivo
   latido();
 }
